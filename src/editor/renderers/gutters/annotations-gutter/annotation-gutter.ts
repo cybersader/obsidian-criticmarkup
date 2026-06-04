@@ -28,6 +28,11 @@ import { markupFocusEffect } from "../../live-preview";
 // EXPL: Margin between the gutter and the content
 const ANNOTATION_GUTTER_MARGIN = 24;
 
+// EXPL: Minimum editor content width to preserve while the annotation gutter is shown.
+//       If the viewport is too narrow to keep this much content next to the gutter
+//       (e.g. a narrow split pane, small window, or pop-out), the gutter auto-folds.
+const MIN_CONTENT_WIDTH = 200;
+
 const unfixGutters = Facet.define<boolean, boolean>({
 	combine: values => values.some(x => x),
 });
@@ -340,6 +345,10 @@ class AnnotationUpdateContext extends UpdateContext {
 
 class AnnotationSingleGutterView extends SingleGutterView {
 	folded: boolean = false;
+	// EXPL: Transient fold forced by a too-narrow viewport. Kept separate from `folded`
+	//       (the user's explicit, persisted preference) so the gutter restores itself
+	//       once there is room again.
+	auto_folded: boolean = false;
 	hide_on_empty: boolean = false;
 	width: number = 0;
 	add_fold_button: boolean = false;
@@ -349,7 +358,33 @@ class AnnotationSingleGutterView extends SingleGutterView {
 
 	fold_button_el: HTMLElement | undefined = undefined;
 	resize_handle_el: HTMLElement | undefined = undefined;
+	resize_observer: ResizeObserver | undefined = undefined;
 	declare elements: AnnotationGutterElement[];
+
+	// EXPL: Whether the gutter should currently be rendered collapsed, for any reason
+	get render_folded(): boolean {
+		return this.folded || this.auto_folded;
+	}
+
+	// EXPL: True when the desired gutter width would leave too little room for content
+	private isTooNarrow(): boolean {
+		return this.view.dom.clientWidth - this.width < MIN_CONTENT_WIDTH;
+	}
+
+	// EXPL: Re-evaluate the auto-fold when the editor is resized (split-pane drag,
+	//       window resize, pop-out). Debounced to avoid thrashing during a drag.
+	debouncedResponsiveFold = debounce(() => this.applyResponsiveFold(), 100);
+
+	private applyResponsiveFold() {
+		const too_narrow = this.isTooNarrow();
+		if (too_narrow && !this.auto_folded && !this.folded) {
+			this.auto_folded = true;
+			this.foldGutter();
+		} else if (!too_narrow && this.auto_folded) {
+			this.auto_folded = false;
+			this.foldGutter();
+		}
+	}
 
 	constructor(public view: EditorView, public config: Required<AnnotationGutterConfig>, private gutterDom: HTMLElement) {
 		super(view, config);
@@ -369,13 +404,19 @@ class AnnotationSingleGutterView extends SingleGutterView {
 		this.add_fold_button = config.includeFoldButton;
 		this.add_resize_handle = config.includeResizeHandle;
 
-		if ((this.hide_on_empty && view.state.field(annotationGutterMarkers).size === 0) || this.folded) {
+		// EXPL: Collapse the gutter on first render if the viewport is too narrow to keep
+		//       a usable amount of content beside it (does not override an explicit fold).
+		if (!this.folded && this.isTooNarrow()) {
+			this.auto_folded = true;
+		}
+
+		if ((this.hide_on_empty && view.state.field(annotationGutterMarkers).size === 0) || this.render_folded) {
 			this.dom.style.width = "0";
 		} else {
 			this.dom.style.width = this.width + "px";
 		}
-		this.view.dom.style.setProperty("--cmtr-anno-gutter-width", this.folded ? "0px" : this.width + "px");
-		this.gutterDom.style.marginInlineStart = this.folded ? "0" : ANNOTATION_GUTTER_MARGIN + "px";
+		this.view.dom.style.setProperty("--cmtr-anno-gutter-width", this.render_folded ? "0px" : this.width + "px");
+		this.gutterDom.style.marginInlineStart = this.render_folded ? "0" : ANNOTATION_GUTTER_MARGIN + "px";
 		this.gutter_position = this.view.scrollDOM.getBoundingClientRect().right - this.view.contentDOM.getBoundingClientRect().right + ANNOTATION_GUTTER_MARGIN;
 
 		if (this.add_fold_button) {
@@ -385,6 +426,10 @@ class AnnotationSingleGutterView extends SingleGutterView {
 		if (this.add_resize_handle) {
 			this.createResizeHandle();
 		}
+
+		// EXPL: Keep the auto-fold in sync as the editor pane is resized
+		this.resize_observer = new ResizeObserver(() => this.debouncedResponsiveFold());
+		this.resize_observer.observe(this.view.dom);
 	}
 
 	createFoldButton() {
@@ -394,6 +439,8 @@ class AnnotationSingleGutterView extends SingleGutterView {
 		foldButtonElement.style.display = this.view.state.field(annotationGutterMarkers).size ? "" : "none";
 		foldButtonElement.onclick = () => {
 			this.folded = !this.folded;
+			// EXPL: An explicit toggle overrides any viewport-driven auto-fold
+			this.auto_folded = false;
 			this.view.state.field(editorInfoField).app.workspace.requestSaveLayout();
 			this.foldGutter();
 		}
@@ -464,7 +511,7 @@ class AnnotationSingleGutterView extends SingleGutterView {
 
 	setFoldButtonState() {
 		if (this.fold_button_el) {
-			if (this.folded) {
+			if (this.render_folded) {
 				this.fold_button_el.children[0].setAttribute("style", "rotate: -180deg;");
 				this.fold_button_el.children[0].ariaLabel = "Unfold gutter";
 				if (this.resize_handle_el) {
@@ -481,10 +528,13 @@ class AnnotationSingleGutterView extends SingleGutterView {
 	}
 
 	foldGutter() {
+		// EXPL: Render-time fold state combines the user's explicit fold with any
+		//       viewport-driven auto-fold (see `auto_folded`)
+		const folded = this.render_folded;
 		this.setFoldButtonState();
 
 		// EXPL: Set the height for every marker to fixed so that they won't resize while the gutter is changing width
-		if (this.folded) {
+		if (folded) {
 			this.elements.forEach(element => {
 				Array.from(element.dom.getElementsByClassName("cmtr-anno-gutter-annotation")).forEach(comment => {
 					comment.setAttribute("style", `max-height: ${comment.clientHeight}px; overflow: hidden;`);
@@ -499,22 +549,22 @@ class AnnotationSingleGutterView extends SingleGutterView {
 				});
 			}, { once: true });
 		}
-		this.dom.style.width = this.folded ? "0" : this.width + "px";
-		this.gutterDom.style.marginInlineStart = this.folded ? "0" : ANNOTATION_GUTTER_MARGIN + "px";
+		this.dom.style.width = folded ? "0" : this.width + "px";
+		this.gutterDom.style.marginInlineStart = folded ? "0" : ANNOTATION_GUTTER_MARGIN + "px";
 
 		if (this.view.state.field(editorInfoField).app.vault.getConfig("readableLineLength")) {
 			// EXPL: Computes the margin before and after the gutter has been folded
 			const readableLineWidth = parseInt(getComputedStyle(this.view.scrollDOM).getPropertyValue("--file-line-width").trim());
 			const marginWithoutGutter = Math.max(0, this.view.scrollDOM.innerWidth - readableLineWidth);
 			const marginWithGutter = Math.max(0, marginWithoutGutter - this.width);
-			const newMargin = (this.folded ? marginWithoutGutter : marginWithGutter) / 2;
-			const oldMargin = (this.folded ? marginWithGutter : marginWithoutGutter) / 2;
+			const newMargin = (folded ? marginWithoutGutter : marginWithGutter) / 2;
+			const oldMargin = (folded ? marginWithGutter : marginWithoutGutter) / 2;
 
 			// EXPL: Freeze the contentDOM to prevent content shifting while the gutter is being folded
-			this.view.contentDOM.style.width = this.view.contentDOM.clientWidth + (this.folded ? ANNOTATION_GUTTER_MARGIN : 0) + "px !important";
+			this.view.contentDOM.style.width = this.view.contentDOM.clientWidth + (folded ? ANNOTATION_GUTTER_MARGIN : 0) + "px !important";
 			// EXPL: Set the old margin to transition from
 			this.view.scrollDOM.children[0].setAttribute("style", `margin: 0 ${oldMargin}px; transition: margin 0.4s ease-in-out, max-width 0.4s ease-in-out;`);
-			if (!this.folded) {
+			if (!folded) {
 				this.view.dom.style.setProperty("--cmtr-anno-gutter-width", this.width + "px");
 			}
 
@@ -525,7 +575,7 @@ class AnnotationSingleGutterView extends SingleGutterView {
 				this.dom.addEventListener("transitionend", () => {
 					this.view.contentDOM.removeAttribute("style");
 					this.view.scrollDOM.children[0].removeAttribute("style");
-					if (this.folded) {
+					if (folded) {
 						this.view.dom.style.setProperty("--cmtr-anno-gutter-width", "0px");
 					}
 				}, { once: true });
@@ -545,13 +595,17 @@ class AnnotationSingleGutterView extends SingleGutterView {
 			const resize_handle = transaction.annotation(annotationGutterResizeHandleAnnotation);
 			if (width !== undefined) {
 				this.width = width;
-				if (!this.hide_on_empty && !this.folded) {
+				if (!this.hide_on_empty && !this.render_folded) {
 					this.dom.style.width = width + "px";
 					this.setFoldButtonState();
 				}
 				this.view.dom.style.setProperty("--cmtr-anno-gutter-width", this.width + "px");
+				// EXPL: A wider configured width may no longer fit -- re-check the auto-fold
+				this.debouncedResponsiveFold();
 			}
 			if (fold_status !== undefined) {
+				// EXPL: An explicit fold command overrides any viewport-driven auto-fold
+				this.auto_folded = false;
 				if (fold_status === null) {
 					this.folded = !this.folded;
 					this.view.state.field(editorInfoField).app.workspace.requestSaveLayout();
@@ -619,6 +673,7 @@ class AnnotationSingleGutterView extends SingleGutterView {
 	}
 
 	destroy() {
+		this.resize_observer?.disconnect();
 		this.fold_button_el?.remove();
 		this.resize_handle_el?.remove();
 
