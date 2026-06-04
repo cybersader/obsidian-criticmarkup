@@ -511,7 +511,9 @@ class AnnotationSingleGutterView extends SingleGutterView {
 		this.resize_handle_el.addEventListener("pointerdown", (e: PointerEvent) => {
 			// EXPL: Primary button / primary touch only. Capture the pointer so the drag keeps
 			//       tracking even when it leaves the thin handle, and so it works for touch/pen.
-			if (e.button !== 0) return;
+			//       Never resize a folded gutter — it has no visible width to drag, and doing so
+			//       would force it open without the fold/margin bookkeeping.
+			if (e.button !== 0 || this.render_folded) return;
 			this.resize_handle_el!.setPointerCapture(e.pointerId);
 			let initialPosition = e.clientX;
 			let isReadableLineWidth = this.view.state.field(editorInfoField).app.vault.getConfig("readableLineLength");
@@ -619,7 +621,7 @@ class AnnotationSingleGutterView extends SingleGutterView {
 		if (this.view.state.field(editorInfoField).app.vault.getConfig("readableLineLength")) {
 			// EXPL: Computes the margin before and after the gutter has been folded
 			const readableLineWidth = parseInt(getComputedStyle(this.view.scrollDOM).getPropertyValue("--file-line-width").trim());
-			const marginWithoutGutter = Math.max(0, this.view.scrollDOM.innerWidth - readableLineWidth);
+			const marginWithoutGutter = Math.max(0, this.view.scrollDOM.clientWidth - readableLineWidth);
 			const marginWithGutter = Math.max(0, marginWithoutGutter - w);
 			const newMargin = (folded ? marginWithoutGutter : marginWithGutter) / 2;
 			const oldMargin = (folded ? marginWithGutter : marginWithoutGutter) / 2;
@@ -727,9 +729,13 @@ class AnnotationSingleGutterView extends SingleGutterView {
 					this.fold_button_el.style.display = "";
 				}
 				if (this.resize_handle_el) {
-					this.resize_handle_el.style.display = "";
+					// EXPL: Only reveal the resize handle when the gutter is actually open.
+					//       Otherwise adding the first annotation to a folded gutter would expose
+					//       a draggable handle, and dragging a folded gutter force-opens it without
+					//       the fold/margin bookkeeping — pushing it off-screen.
+					this.resize_handle_el.style.display = this.render_folded ? "none" : "";
 				}
-				if (!this.folded) {
+				if (!this.render_folded) {
 					this.dom.style.width = this.width + "px";
 				}
 			}
