@@ -366,6 +366,11 @@ class AnnotationSingleGutterView extends SingleGutterView {
 	resize_observer: ResizeObserver | undefined = undefined;
 	declare elements: AnnotationGutterElement[];
 
+	// EXPL: User explicitly opened the gutter while it was too narrow to auto-fit.
+	//       Suppresses the viewport auto-fold until there is room again, so a resize
+	//       does not immediately re-fold what the user just chose to open.
+	override_open: boolean = false;
+
 	// EXPL: Whether the gutter should currently be rendered collapsed, for any reason
 	get render_folded(): boolean {
 		return this.folded || this.auto_folded;
@@ -381,13 +386,18 @@ class AnnotationSingleGutterView extends SingleGutterView {
 	debouncedResponsiveFold = debounce(() => this.applyResponsiveFold(), 100);
 
 	private applyResponsiveFold() {
-		const too_narrow = this.isTooNarrow();
-		if (too_narrow && !this.auto_folded && !this.folded) {
-			this.auto_folded = true;
-			this.foldGutter();
-		} else if (!too_narrow && this.auto_folded) {
-			this.auto_folded = false;
-			this.foldGutter();
+		if (this.isTooNarrow()) {
+			if (!this.folded && !this.auto_folded && !this.override_open) {
+				this.auto_folded = true;
+				this.foldGutter();
+			}
+		} else {
+			// EXPL: Room again — drop the transient states and restore if we auto-folded
+			this.override_open = false;
+			if (this.auto_folded) {
+				this.auto_folded = false;
+				this.foldGutter();
+			}
 		}
 	}
 
@@ -443,9 +453,14 @@ class AnnotationSingleGutterView extends SingleGutterView {
 		foldButtonElement.setAttribute("data-tooltip-position", "left");
 		foldButtonElement.style.display = this.view.state.field(annotationGutterMarkers).size ? "" : "none";
 		foldButtonElement.onclick = () => {
-			this.folded = !this.folded;
-			// EXPL: An explicit toggle overrides any viewport-driven auto-fold
+			// EXPL: Toggle the *visible* state — if collapsed for any reason (including
+			//       an auto-fold), a click opens it; if open, a click folds it.
+			const currently_folded = this.render_folded;
 			this.auto_folded = false;
+			this.folded = !currently_folded;
+			// EXPL: Opened while the pane is too narrow → remember it so the resize
+			//       observer does not immediately auto-fold it back.
+			this.override_open = !this.folded && this.isTooNarrow();
 			this.view.state.field(editorInfoField).app.workspace.requestSaveLayout();
 			this.foldGutter();
 		}
@@ -458,7 +473,7 @@ class AnnotationSingleGutterView extends SingleGutterView {
 
 	createResizeHandle() {
 		this.resize_handle_el = createEl("hr", { cls: ["cmtr-anno-gutter-resize-handle"] });
-		this.resize_handle_el.style.display = (this.view.state.field(annotationGutterMarkers).size && !this.folded) ? "" : "none";
+		this.resize_handle_el.style.display = (this.view.state.field(annotationGutterMarkers).size && !this.render_folded) ? "" : "none";
 		this.resize_handle_el.addEventListener("pointerdown", (e: PointerEvent) => {
 			// EXPL: Primary button / primary touch only. Capture the pointer so the drag keeps
 			//       tracking even when it leaves the thin handle, and so it works for touch/pen.
@@ -617,14 +632,17 @@ class AnnotationSingleGutterView extends SingleGutterView {
 				this.debouncedResponsiveFold();
 			}
 			if (fold_status !== undefined) {
-				// EXPL: An explicit fold command overrides any viewport-driven auto-fold
+				// EXPL: An explicit fold command overrides any viewport-driven auto-fold.
+				//       Toggle off the *visible* state so it is never off-by-one when auto-folded.
+				const was_folded = this.render_folded;
 				this.auto_folded = false;
 				if (fold_status === null) {
-					this.folded = !this.folded;
+					this.folded = !was_folded;
 					this.view.state.field(editorInfoField).app.workspace.requestSaveLayout();
 				} else {
 					this.folded = fold_status;
 				}
+				this.override_open = !this.folded && this.isTooNarrow();
 				this.foldGutter();
 			}
 			if (hide_empty !== undefined) {
