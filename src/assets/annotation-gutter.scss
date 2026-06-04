@@ -55,7 +55,10 @@
   padding: var(--size-2-2);
   position: relative;
 
-  overflow-y: scroll;
+  // EXPL: Only show a scrollbar when the annotation actually overflows, rather than
+  //       on every annotation (the always-on scrollbars are especially cluttered at
+  //       narrow gutter widths)
+  overflow-y: auto;
   word-wrap: break-word;
 }
 
