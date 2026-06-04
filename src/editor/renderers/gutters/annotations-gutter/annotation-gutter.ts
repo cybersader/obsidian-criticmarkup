@@ -33,6 +33,11 @@ const ANNOTATION_GUTTER_MARGIN = 24;
 //       (e.g. a narrow split pane, small window, or pop-out), the gutter auto-folds.
 const MIN_CONTENT_WIDTH = 200;
 
+// EXPL: Smallest width the gutter can be dragged to via the resize handle. Prevents the
+//       handle from being dragged down to 0px, where it becomes too thin to grab again.
+//       (Full collapse is what the fold button is for.)
+const MIN_GUTTER_WIDTH = 120;
+
 const unfixGutters = Facet.define<boolean, boolean>({
 	combine: values => values.some(x => x),
 });
@@ -454,14 +459,18 @@ class AnnotationSingleGutterView extends SingleGutterView {
 	createResizeHandle() {
 		this.resize_handle_el = createEl("hr", { cls: ["cmtr-anno-gutter-resize-handle"] });
 		this.resize_handle_el.style.display = (this.view.state.field(annotationGutterMarkers).size && !this.folded) ? "" : "none";
-		this.resize_handle_el.addEventListener("mousedown", (e) => {
+		this.resize_handle_el.addEventListener("pointerdown", (e: PointerEvent) => {
+			// EXPL: Primary button / primary touch only. Capture the pointer so the drag keeps
+			//       tracking even when it leaves the thin handle, and so it works for touch/pen.
+			if (e.button !== 0) return;
+			this.resize_handle_el!.setPointerCapture(e.pointerId);
 			let initialPosition = e.clientX;
 			let isReadableLineWidth = this.view.state.field(editorInfoField).app.vault.getConfig("readableLineLength");
 			const temporarySheet = this.view.dom.doc.styleSheets[0];
 
 			// EXPL: Debounce to prevent excessive state updates and DOM redraws while dragging the handle
 			const setWidth = debounce((width: number) => {
-				this.width = Math.round(Math.max(0, width));
+				this.width = Math.round(Math.max(MIN_GUTTER_WIDTH, width));
 				this.view.state.field(editorInfoField).app.workspace.requestSaveLayout();
 				this.dom.style.width = this.width + "px";
 				this.view.dom.style.setProperty("--cmtr-anno-gutter-width", this.width + "px");
@@ -481,7 +490,7 @@ class AnnotationSingleGutterView extends SingleGutterView {
 			this.view.scrollDOM.classList.toggle("cmtr-anno-gutter-resizing", true);
 
 			let currentWidth = parseInt(this.dom.style.width.slice(0, -2));
-			const onMouseMove = (evt: MouseEvent) => {
+			const onPointerMove = (evt: PointerEvent) => {
 				const deltaX = evt.clientX - initialPosition;
 				initialPosition = evt.clientX
 				currentWidth -= deltaX;
@@ -489,9 +498,11 @@ class AnnotationSingleGutterView extends SingleGutterView {
 				return true;
 			}
 
-			const onMouseStop = () => {
-				this.view.dom.doc.removeEventListener("mousemove", onMouseMove);
-				this.view.dom.doc.removeEventListener("mouseup", onMouseStop);
+			const onPointerStop = () => {
+				this.resize_handle_el!.removeEventListener("pointermove", onPointerMove);
+				this.resize_handle_el!.removeEventListener("pointerup", onPointerStop);
+				this.resize_handle_el!.removeEventListener("pointercancel", onPointerStop);
+				this.resize_handle_el!.releasePointerCapture(e.pointerId);
 				this.resize_handle_el!.classList.toggle("cmtr-anno-gutter-resize-handle-hover", false);
 				this.view.scrollDOM.classList.toggle("cmtr-anno-gutter-resizing", false);
 
@@ -500,8 +511,10 @@ class AnnotationSingleGutterView extends SingleGutterView {
 				}
 			}
 
-			this.view.dom.doc.addEventListener("mousemove", onMouseMove);
-			this.view.dom.doc.addEventListener("mouseup", onMouseStop);
+			// EXPL: With the pointer captured above, move/up/cancel are delivered to the handle
+			this.resize_handle_el!.addEventListener("pointermove", onPointerMove);
+			this.resize_handle_el!.addEventListener("pointerup", onPointerStop);
+			this.resize_handle_el!.addEventListener("pointercancel", onPointerStop);
 
 			return true;
 		});
