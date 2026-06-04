@@ -378,8 +378,12 @@ class AnnotationSingleGutterView extends SingleGutterView {
 
 	// EXPL: How much width the gutter can actually use without pushing content off-screen.
 	//       With readable line width on, the gutter lives in the margin to the right of the
-	//       capped content, so it can only use `pane - file-line-width`. Otherwise the
-	//       content can shrink, so it can use everything past MIN_CONTENT_WIDTH.
+	//       text column. We MEASURE that gap from the live DOM rather than trusting
+	//       `--file-line-width`: some setups (notably the Minimal theme / Minimal Theme
+	//       Settings) render the column wider than that variable claims, which made the old
+	//       `pane - file-line-width` estimate too generous and pushed the gutter off-screen.
+	//       Measuring is also theme-agnostic: it works whether the column is centered (Minimal)
+	//       or shifted left by the default theme's readable-width carve-out.
 	private maxGutterWidth(): number {
 		const pane = this.view.dom.clientWidth;
 		const readable = this.view.state.field(editorInfoField).app.vault.getConfig("readableLineLength");
@@ -387,9 +391,25 @@ class AnnotationSingleGutterView extends SingleGutterView {
 			const fileLineWidth = parseInt(
 				getComputedStyle(this.view.scrollDOM).getPropertyValue("--file-line-width").trim(),
 			);
-			// Only trust a sensible readable width; otherwise fall through to the content-based calc
-			if (fileLineWidth > 0 && fileLineWidth < pane * 2) {
+			const contentWidth = this.view.contentDOM.clientWidth;
+			// EXPL: Fast path — the column actually honours `--file-line-width` (the default
+			//       readable-width carve-out). Then the column shifts left as the gutter grows,
+			//       so the gutter may use the whole right margin (`pane - file-line-width`).
+			if (fileLineWidth > 0 && fileLineWidth < pane && contentWidth <= fileLineWidth + 50) {
 				return Math.max(0, pane - fileLineWidth);
+			}
+			// EXPL: Otherwise a theme renders the column wider than the variable claims (e.g.
+			//       Minimal Theme Settings). The column is fixed/centered, so MEASURE the real
+			//       gap to the right of it instead — exact, theme-proof, and never overflows.
+			//       (Inner-right edge of the scroller; clientWidth excludes any scrollbar.)
+			const scrollRect = this.view.scrollDOM.getBoundingClientRect();
+			const scrollerInnerRight = scrollRect.left + this.view.scrollDOM.clientWidth;
+			const contentRight = this.view.contentDOM.getBoundingClientRect().right;
+			const measured = scrollerInnerRight - contentRight - ANNOTATION_GUTTER_MARGIN;
+			// EXPL: A real (finite) measurement wins, even if it's 0 — that means there's
+			//       genuinely no room and the gutter should fold rather than overflow.
+			if (Number.isFinite(measured)) {
+				return Math.max(0, Math.floor(measured));
 			}
 		}
 		return Math.max(0, pane - MIN_CONTENT_WIDTH);
