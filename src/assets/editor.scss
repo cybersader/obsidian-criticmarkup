@@ -181,6 +181,21 @@
   font-size: var(--font-smallest);
   color: var(--text-faint);
   margin-right: var(--size-2-1);
+  white-space: nowrap;
+}
+
+// EXPL: On narrow editor panes the suggestion-mode text labels ("Editing (REG)",
+//       "Showing all suggestions", …) crowd out and overlap the native reading-view
+//       and more-options buttons. Treat the view header as a query container and hide
+//       the labels once it gets narrow — the icon buttons (with their tooltips) stay.
+.workspace-leaf-content[data-type="markdown"] .view-header {
+  container: cmtr-view-header / inline-size;
+}
+
+@container cmtr-view-header (max-width: 600px) {
+  .cmtr-suggestion-status {
+    display: none;
+  }
 }
 
 .cmtr-submenu-nested {
