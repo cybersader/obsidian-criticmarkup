@@ -9,6 +9,20 @@
   position: sticky !important;
 }
 
+// EXPL: Minimal implements readable line width by forcing `.cm-content` / `.cm-sizer` to
+//       width:100% and constraining the text BLOCKS instead (left-aligned). That leaves the
+//       annotation gutter — a sibling rendered after `.cm-content` — with no room, pushing it
+//       off-screen. When the Minimal gutter is present, shrink `.cm-content` by the gutter's
+//       width so the gutter slides into the reclaimed (previously empty) space on its right.
+//       The text blocks stay put (Minimal left-aligns them); only empty right space is given up.
+// EXPL: `:not([style*="width: 0px"])` scopes this to an OPEN gutter only — a folded gutter has
+//       inline `width: 0px`, so the column keeps its full width when the gutter is folded/empty.
+//       The 48px allows for the gutter's inline-start margin plus a scrollbar so its right edge
+//       stays inside the pane.
+.markdown-source-view.mod-cm6.is-readable-line-width:has(.is-minimal.cmtr-anno-gutter:not([style*="width: 0px"])) .cm-content {
+  width: calc(100% - var(--cmtr-anno-gutter-width, 0px) - 48px) !important;
+}
+
 // Removes additional padding to the right of the gutter
 .cm-gutters.cm-gutters:has(> .cmtr-anno-gutter) {
   padding-inline-end: 0;
